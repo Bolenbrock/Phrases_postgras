@@ -6,7 +6,8 @@ import {
     getQuoteById,
     deleteQuoteById,
     updateQuoteById,
-    searchQuotesWithPagination // Новая функция для поиска цитат
+    searchQuotesWithPagination, // Функция для поиска цитат
+    saveQuoteToDatabase // Функция для сохранения цитат
 } from './db.js';
 import fetch from 'node-fetch';
 
@@ -21,6 +22,7 @@ console.log('Бот запущен!');
 
 const chatContext = {};
 
+// Главная клавиатура
 const mainKeyboard = {
     reply_markup: {
         keyboard: [
@@ -31,7 +33,7 @@ const mainKeyboard = {
     }
 };
 
-// Функция для создания клавиатуры с действиями для цитат
+// Создание клавиатуры для действий с цитатами
 function createQuoteKeyboard() {
     return {
         reply_markup: {
@@ -41,6 +43,72 @@ function createQuoteKeyboard() {
             ]
         }
     };
+}
+
+// Создание клавиатуры категорий для выбора при просмотре цитат
+async function createCategoryKeyboard() {
+    const rows = await runQuery(`SELECT name FROM categories`);
+    if (rows.length === 0) {
+        return {
+            reply_markup: {
+                inline_keyboard: [[{ text: 'Категории отсутствуют', callback_data: 'no_categories' }]]
+            }
+        };
+    }
+    const keyboard = { reply_markup: { inline_keyboard: [] } };
+    let rowButtons = [];
+    rows.forEach((row, index) => {
+        rowButtons.push({ text: row.name, callback_data: `myquotes_category_${row.name}` });
+        if ((index + 1) % 3 === 0 || index === rows.length - 1) {
+            keyboard.reply_markup.inline_keyboard.push(rowButtons);
+            rowButtons = [];
+        }
+    });
+    return keyboard;
+}
+
+// Создание клавиатуры категорий для просмотра цитат
+async function createShowCategoryKeyboard() {
+    const rows = await runQuery(`SELECT name FROM categories`);
+    if (rows.length === 0) {
+        return {
+            reply_markup: {
+                inline_keyboard: [[{ text: 'Категории отсутствуют', callback_data: 'no_categories' }]]
+            }
+        };
+    }
+    const keyboard = { reply_markup: { inline_keyboard: [] } };
+    let rowButtons = [];
+    rows.forEach((row, index) => {
+        rowButtons.push({ text: row.name, callback_data: `showcategory_category_${row.name}` });
+        if ((index + 1) % 3 === 0 || index === rows.length - 1) {
+            keyboard.reply_markup.inline_keyboard.push(rowButtons);
+            rowButtons = [];
+        }
+    });
+    return keyboard;
+}
+
+// Создание клавиатуры категорий для сохранения цитат
+async function createSaveQuoteCategoryKeyboard() {
+    const rows = await runQuery(`SELECT name FROM categories`);
+    if (rows.length === 0) {
+        return {
+            reply_markup: {
+                inline_keyboard: [[{ text: 'Категории отсутствуют', callback_data: 'no_categories' }]]
+            }
+        };
+    }
+    const keyboard = { reply_markup: { inline_keyboard: [] } };
+    let rowButtons = [];
+    rows.forEach((row, index) => {
+        rowButtons.push({ text: row.name, callback_data: `savequote_category_${row.name}` });
+        if ((index + 1) % 3 === 0 || index === rows.length - 1) {
+            keyboard.reply_markup.inline_keyboard.push(rowButtons);
+            rowButtons = [];
+        }
+    });
+    return keyboard;
 }
 
 // Получение случайной цитаты из API
@@ -55,7 +123,7 @@ async function getQuote() {
     }
 }
 
-// Обработчик команд бота
+// Обработчик команды /start
 bot.onText(/\/start/, async (msg) => {
     const chatId = msg.chat.id;
     const welcomeMessage = `
@@ -130,8 +198,6 @@ bot.on('message', async (msg) => {
                 await bot.sendMessage(chatId, 'Произошла ошибка при поиске. Попробуйте позже.');
             }
             delete chatContext[chatId];
-        } else {
-            await saveMessage(chatId, msg.text);
         }
     }
 });
@@ -284,87 +350,30 @@ bot.on('callback_query', async (query) => {
     }
 });
 
-// Создание клавиатуры категорий для выбора при просмотре цитат
-async function createCategoryKeyboard() {
-    const rows = await runQuery(`SELECT name FROM categories`);
-    if (rows.length === 0) {
-        return {
-            reply_markup: {
-                inline_keyboard: [[{ text: 'Категории отсутствуют', callback_data: 'no_categories' }]]
+// Обработка редактирования цитаты
+bot.on('message', async (msg) => {
+    const chatId = msg.chat.id;
+    if (chatContext[chatId]?.action === 'edit_quote') {
+        const quoteId = chatContext[chatId].quoteId;
+        const newText = msg.text;
+        try {
+            const quote = await getQuoteById(quoteId);
+            if (!quote) {
+                await bot.sendMessage(chatId, 'Цитата не найдена.');
+                return;
             }
-        };
-    }
-    const keyboard = { reply_markup: { inline_keyboard: [] } };
-    let rowButtons = [];
-    rows.forEach((row, index) => {
-        rowButtons.push({ text: row.name, callback_data: `myquotes_category_${row.name}` });
-        if ((index + 1) % 3 === 0 || index === rows.length - 1) {
-            keyboard.reply_markup.inline_keyboard.push(rowButtons);
-            rowButtons = [];
+            await updateQuoteById(quoteId, newText, quote.category);
+            await bot.sendMessage(chatId, 'Цитата успешно обновлена!');
+        } catch (error) {
+            console.error('Ошибка при обновлении цитаты:', error);
+            await bot.sendMessage(chatId, 'Произошла ошибка при обновлении цитаты.');
+        } finally {
+            delete chatContext[chatId];
         }
-    });
-    return keyboard;
-}
-
-// Создание клавиатуры категорий для просмотра цитат
-async function createShowCategoryKeyboard() {
-    const rows = await runQuery(`SELECT name FROM categories`);
-    if (rows.length === 0) {
-        return {
-            reply_markup: {
-                inline_keyboard: [[{ text: 'Категории отсутствуют', callback_data: 'no_categories' }]]
-            }
-        };
     }
-    const keyboard = { reply_markup: { inline_keyboard: [] } };
-    let rowButtons = [];
-    rows.forEach((row, index) => {
-        rowButtons.push({ text: row.name, callback_data: `showcategory_category_${row.name}` });
-        if ((index + 1) % 3 === 0 || index === rows.length - 1) {
-            keyboard.reply_markup.inline_keyboard.push(rowButtons);
-            rowButtons = [];
-        }
-    });
-    return keyboard;
-}
+});
 
-// Создание клавиатуры категорий для сохранения цитат
-async function createSaveQuoteCategoryKeyboard() {
-    const rows = await runQuery(`SELECT name FROM categories`);
-    if (rows.length === 0) {
-        return {
-            reply_markup: {
-                inline_keyboard: [[{ text: 'Категории отсутствуют', callback_data: 'no_categories' }]]
-            }
-        };
-    }
-    const keyboard = { reply_markup: { inline_keyboard: [] } };
-    let rowButtons = [];
-    rows.forEach((row, index) => {
-        rowButtons.push({ text: row.name, callback_data: `savequote_category_${row.name}` });
-        if ((index + 1) % 3 === 0 || index === rows.length - 1) {
-            keyboard.reply_markup.inline_keyboard.push(rowButtons);
-            rowButtons = [];
-        }
-    });
-    return keyboard;
-}
-
-// Сохранение цитаты в базу данных
-async function saveQuoteToDatabase(chatId, text, category) {
-    try {
-        await runCommand(
-            `INSERT INTO saved_quotes (text, category, chatId) VALUES ($1, $2, $3)`,
-            [text, category, chatId]
-        );
-        console.log(`Цитата успешно сохранена в категорию "${category}". Текст: "${text}"`);
-    } catch (error) {
-        console.error('Ошибка при сохранении цитаты:', error);
-        throw error;
-    }
-}
-
-// Поиск цитат с пагинацией
+// Функция для получения цитат с пагинацией
 async function getSavedQuotesFromDatabaseWithPagination(chatId, limit, offset, category = null) {
     let query = `SELECT id, text FROM saved_quotes WHERE chatId = $1`;
     const params = [chatId];
@@ -378,7 +387,7 @@ async function getSavedQuotesFromDatabaseWithPagination(chatId, limit, offset, c
     return rows;
 }
 
-// Получение всех цитат по категории
+// Функция для получения всех цитат по категории
 async function getSavedQuotesFromDatabase(category) {
     const query = `SELECT text FROM saved_quotes WHERE category = $1`;
     const params = [category];
