@@ -8,7 +8,7 @@ const dbName = process.env.DATABASE_URL.split('/').pop();
 
 // Создаем пул подключений
 const pool = new Pool({
-    connectionString: process.env.DATABASE_URL, // Используем PROVIDED DATABASE_URL
+    connectionString: process.env.DATABASE_URL,
 });
 
 // Проверка и создание базы данных
@@ -39,32 +39,12 @@ async function createTables() {
     const client = await pool.connect();
     try {
         console.log('Creating tables...');
-
+        
         // Таблица categories
         await client.query(`
             CREATE TABLE IF NOT EXISTS categories (
                 id SERIAL PRIMARY KEY,
                 name TEXT NOT NULL UNIQUE
-            )
-        `);
-
-        // Таблица local_quotes
-        await client.query(`
-            CREATE TABLE IF NOT EXISTS local_quotes (
-                id SERIAL PRIMARY KEY,
-                text TEXT NOT NULL,
-                author TEXT NOT NULL,
-                category TEXT
-            )
-        `);
-
-        // Таблица messages
-        await client.query(`
-            CREATE TABLE IF NOT EXISTS messages (
-                id SERIAL PRIMARY KEY,
-                text TEXT NOT NULL,
-                chatId BIGINT NOT NULL,
-                timestamp TIMESTAMP WITHOUT TIME ZONE DEFAULT NOW()
             )
         `);
 
@@ -103,7 +83,7 @@ async function createTables() {
     }
 }
 
-// Заполнение категорий
+// Заполнение категорий начальными данными
 async function fillCategories() {
     try {
         const rows = await runQuery('SELECT COUNT(*) AS count FROM categories');
@@ -154,32 +134,13 @@ export async function runCommand(command, params = []) {
     }
 }
 
-// Добавление текста в FTS
-export async function addTextToFTS(text, chatId, type, timestamp = 'NOW()') {
-    if (!text || text.trim().length < 2) {
-        console.warn('Попытка добавить слишком короткий текст в FTS.');
-        return;
-    }
-    const query = `
-        INSERT INTO all_texts_fts (text, chatId, type, timestamp)
-        VALUES ($1, $2, $3, $4)
-    `;
-    try {
-        await runCommand(query, [text, chatId, type, timestamp]);
-    } catch (error) {
-        console.error('Error adding text to FTS:', error);
-        throw error;
-    }
-}
-
-// Сохранение цитаты
-export async function saveQuote(chatId, text, category) {
+// Сохранение цитаты в базу данных
+export async function saveQuoteToDatabase(chatId, text, category) {
     try {
         await runCommand(
             `INSERT INTO saved_quotes (text, category, chatId) VALUES ($1, $2, $3)`,
             [text, category, chatId]
         );
-        await addTextToFTS(text, chatId, 'quote');
         console.log(`Цитата успешно сохранена в категорию "${category}". Текст: "${text}"`);
     } catch (error) {
         console.error('Ошибка при сохранении цитаты:', error);
@@ -187,7 +148,7 @@ export async function saveQuote(chatId, text, category) {
     }
 }
 
-// Поиск цитат
+// Поиск цитат с пагинацией
 export async function searchQuotesWithPagination(searchText, limit, offset) {
     const query = `
         SELECT text 
@@ -223,7 +184,7 @@ export async function getQuoteById(quoteId) {
     }
 }
 
-// Удаление цитаты
+// Удаление цитаты по ID
 export async function deleteQuoteById(quoteId) {
     const query = `
         DELETE FROM saved_quotes 
@@ -239,7 +200,7 @@ export async function deleteQuoteById(quoteId) {
     }
 }
 
-// Обновление цитаты
+// Обновление цитаты по ID
 export async function updateQuoteById(quoteId, newText, category) {
     const query = `
         UPDATE saved_quotes 
@@ -259,5 +220,5 @@ export async function updateQuoteById(quoteId, newText, category) {
 // Закрытие соединения
 export async function closeDB() {
     await pool.end();
-    console.log('Соединение с базой данных закрыто.');
+    console.log('Database connection closed.');
 }
