@@ -1,3 +1,4 @@
+
 import pg from 'pg';
 import 'dotenv/config';
 
@@ -39,7 +40,7 @@ async function createTables() {
     const client = await pool.connect();
     try {
         console.log('Creating tables...');
-        
+
         // Таблица categories
         await client.query(`
             CREATE TABLE IF NOT EXISTS categories (
@@ -73,6 +74,14 @@ async function createTables() {
         // Индекс для полнотекстового поиска
         await client.query(`
             CREATE INDEX IF NOT EXISTS idx_fts_text_search ON all_texts_fts USING GIN (tsv);
+        `);
+
+        // Таблица chat_settings
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS chat_settings (
+                chat_id BIGINT PRIMARY KEY,
+                mute BOOLEAN DEFAULT FALSE
+            )
         `);
 
         console.log('Tables created successfully.');
@@ -151,9 +160,9 @@ export async function saveQuoteToDatabase(chatId, text, category) {
 // Поиск цитат с пагинацией
 export async function searchQuotesWithPagination(searchText, limit, offset) {
     const query = `
-        SELECT text 
-        FROM saved_quotes 
-        WHERE LOWER(text) LIKE LOWER($1) 
+        SELECT text
+        FROM saved_quotes
+        WHERE LOWER(text) LIKE LOWER($1)
         LIMIT $2 OFFSET $3
     `;
     const params = [`%${searchText.toLowerCase()}%`, limit, offset];
@@ -170,8 +179,8 @@ export async function searchQuotesWithPagination(searchText, limit, offset) {
 // Получение цитаты по ID
 export async function getQuoteById(quoteId) {
     const query = `
-        SELECT id, text, category 
-        FROM saved_quotes 
+        SELECT id, text, category
+        FROM saved_quotes
         WHERE id = $1
     `;
     const params = [quoteId];
@@ -187,7 +196,7 @@ export async function getQuoteById(quoteId) {
 // Удаление цитаты по ID
 export async function deleteQuoteById(quoteId) {
     const query = `
-        DELETE FROM saved_quotes 
+        DELETE FROM saved_quotes
         WHERE id = $1
     `;
     const params = [quoteId];
@@ -203,8 +212,8 @@ export async function deleteQuoteById(quoteId) {
 // Обновление цитаты по ID
 export async function updateQuoteById(quoteId, newText, category) {
     const query = `
-        UPDATE saved_quotes 
-        SET text = $1, category = $2 
+        UPDATE saved_quotes
+        SET text = $1, category = $2
         WHERE id = $3
     `;
     const params = [newText, category, quoteId];
@@ -216,6 +225,31 @@ export async function updateQuoteById(quoteId, newText, category) {
         throw error;
     }
 }
+
+// Функция получения статуса звука для чата
+export const getMuteStatus = async (chatId) => {
+    try {
+        const result = await runQuery(`SELECT mute FROM chat_settings WHERE chat_id = $1`, [chatId]);
+        return result.length ? result[0].mute : false;
+    } catch (error) {
+        console.error("Ошибка при получении статуса mute:", error);
+        return false; // По умолчанию звук включен (false), если произошла ошибка.
+    }
+};
+
+// Функция установки статуса звука
+export const setMuteStatus = async (chatId, mute) => {
+    try {
+        await runCommand(`
+            INSERT INTO chat_settings (chat_id, mute)
+            VALUES ($1, $2)
+            ON CONFLICT (chat_id)
+            DO UPDATE SET mute = EXCLUDED.mute
+        `, [chatId, mute]);
+    } catch (error) {
+        console.error("Ошибка при установке статуса mute:", error);
+    }
+};
 
 // Закрытие соединения
 export async function closeDB() {
