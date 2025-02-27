@@ -1,4 +1,3 @@
-// Импортируем необходимые модули
 import TelegramBot from 'node-telegram-bot-api';
 import {
     runQuery,
@@ -10,9 +9,9 @@ import {
     saveQuoteToDatabase,
     getMuteStatus,
     setMuteStatus
-} from './db.js'; // Убедитесь, что путь к db.js правильный
+} from './db.js'; // Убедитесь, что путь к db.js ПРАВИЛЬНЫЙ!
 import fetch from 'node-fetch';
-import 'dotenv/config';
+import 'dotenv/config'; // Убедитесь, что .env файл настроен правильно!
 
 // Получаем токен бота из переменных окружения
 const token = process.env.BOT_TOKEN;
@@ -25,34 +24,48 @@ if (!token) {
 const bot = new TelegramBot(token, { polling: true });
 console.log('Бот запущен!');
 
-// Контекст чата для временного хранения состояний пользователей
+// Контекст чата (хранит состояние для каждого пользователя)
 const chatContext = {};
 
-// Обертка для bot.sendMessage
+// *** Обертки для функций отправки сообщений (с обработкой ошибок и логированием) ***
 async function sendBotMessage(chatId, text, options = {}) {
-    const mute = await getMuteStatus(chatId);
-    const mergedOptions = { ...options, disable_notification: mute };
-    return bot.sendMessage(chatId, text, mergedOptions);
+    try {
+        const mute = await getMuteStatus(chatId);
+        const mergedOptions = { ...options, disable_notification: mute };
+        console.log(`Sending message to ${chatId}, disable_notification: ${mergedOptions.disable_notification}, text: ${text.substring(0, 50)}...`); // Логирование
+        return await bot.sendMessage(chatId, text, mergedOptions);
+    } catch (error) {
+        console.error(`Ошибка в sendBotMessage (chatId: ${chatId}):`, error);
+        // Обработка ошибки (можно отправить сообщение об ошибке пользователю)
+        try {
+            await bot.sendMessage(chatId, "Произошла ошибка при отправке сообщения."); // Отправка без обертки, т.к. обертка может снова вызвать ошибку
+        } catch (sendError) {
+            console.error("Ошибка при отправке сообщения об ошибке:", sendError);
+        }
+    }
 }
 
-// Обертка для bot.editMessageText
 async function editBotMessageText(text, options = {}) {
-    const chatId = options.chat_id;  // chatId ОБЯЗАТЕЛЬНО должен быть в options
-    if (!chatId) {
-        console.error("editBotMessageText: chat_id is required in options!"); // Важная проверка!
-        return; // Или выбросить ошибку: throw new Error("...");
+    try {
+        const chatId = options.chat_id;
+        if (!chatId) {
+            throw new Error("editBotMessageText: chat_id is required in options!"); // Теперь выбрасываем ошибку
+        }
+        const messageId = options.message_id;
+        if (!messageId) {
+            throw new Error("editBotMessageText: message_id is required in options!"); // Теперь выбрасываем ошибку
+        }
+        const mute = await getMuteStatus(chatId);
+        const mergedOptions = { ...options, disable_notification: mute };
+        console.log(`Editing message in ${chatId}, disable_notification: ${mergedOptions.disable_notification}, text: ${text.substring(0, 50)}...`);// Логирование
+        return await bot.editMessageText(text, mergedOptions);
+    } catch (error) {
+        console.error(`Ошибка в editBotMessageText (chatId: ${options.chat_id}, messageId: ${options.message_id}):`, error);
+        // Обработка ошибки (можно отправить сообщение об ошибке пользователю, если это уместно)
     }
-    const messageId = options.message_id; // message_id тоже должен быть
-    if (!messageId) {
-         console.error("editBotMessageText: message_id is required in options!"); // Важная проверка!
-        return; // Или выбросить ошибку: throw new Error("...");
-    }
-    const mute = await getMuteStatus(chatId);
-    const mergedOptions = { ...options, disable_notification: mute };
-    return bot.editMessageText(text, mergedOptions);
 }
 
-// Создание главной клавиатуры
+// *** Функции создания клавиатур ***
 async function createMainKeyboard(chatId) {
     const mute = await getMuteStatus(chatId);
     return {
@@ -67,7 +80,6 @@ async function createMainKeyboard(chatId) {
     };
 }
 
-// Создание клавиатуры для действий с цитатами (инлайн)
 function createQuoteKeyboard() {
     return {
         reply_markup: {
@@ -79,93 +91,113 @@ function createQuoteKeyboard() {
     };
 }
 
-// Создание клавиатуры категорий для выбора при просмотре своих цитат (инлайн)
 async function createCategoryKeyboard() {
-    const rows = await runQuery(`SELECT name FROM categories`);
-    if (rows.length === 0) {
+    try {
+        const rows = await runQuery(`SELECT name FROM categories`);
+        if (rows.length === 0) {
+            return {
+                reply_markup: {
+                    inline_keyboard: [[{ text: 'Категории отсутствуют', callback_data: 'no_categories' }]]
+                }
+            };
+        }
+        const keyboard = { reply_markup: { inline_keyboard: [] } };
+        let rowButtons = [];
+        rows.forEach((row, index) => {
+            rowButtons.push({ text: row.name, callback_data: `myquotes_category_${row.name}` });
+            if ((index + 1) % 3 === 0 || index === rows.length - 1) {
+                keyboard.reply_markup.inline_keyboard.push(rowButtons);
+                rowButtons = [];
+            }
+        });
+        return keyboard;
+    } catch (error) {
+        console.error("Ошибка в createCategoryKeyboard:", error); // Логирование
+        // Можно вернуть клавиатуру с сообщением об ошибке, или пустую клавиатуру
         return {
             reply_markup: {
-                inline_keyboard: [[{ text: 'Категории отсутствуют', callback_data: 'no_categories' }]]
+                inline_keyboard: [[{ text: 'Ошибка загрузки', callback_data: 'error' }]]
             }
         };
     }
-    const keyboard = { reply_markup: { inline_keyboard: [] } };
-    let rowButtons = [];
-    rows.forEach((row, index) => {
-        rowButtons.push({ text: row.name, callback_data: `myquotes_category_${row.name}` });
-        if ((index + 1) % 3 === 0 || index === rows.length - 1) {
-            keyboard.reply_markup.inline_keyboard.push(rowButtons);
-            rowButtons = [];
-        }
-    });
-    return keyboard;
 }
 
-// Создание клавиатуры категорий для просмотра цитат (инлайн)
 async function createShowCategoryKeyboard() {
-    const rows = await runQuery(`SELECT name FROM categories`);
-    if (rows.length === 0) {
-        return {
-            reply_markup: {
-                inline_keyboard: [[{ text: 'Категории отсутствуют', callback_data: 'no_categories' }]]
-            }
-        };
-    }
-    const keyboard = { reply_markup: { inline_keyboard: [] } };
-    let rowButtons = [];
-    rows.forEach((row, index) => {
-        rowButtons.push({ text: row.name, callback_data: `showcategory_category_${row.name}` });
-        if ((index + 1) % 3 === 0 || index === rows.length - 1) {
-            keyboard.reply_markup.inline_keyboard.push(rowButtons);
-            rowButtons = [];
+        const rows = await runQuery(`SELECT name FROM categories`);
+        if (rows.length === 0) {
+            return {
+                reply_markup: {
+                    inline_keyboard: [[{ text: 'Категории отсутствуют', callback_data: 'no_categories' }]]
+                }
+            };
         }
-    });
-    return keyboard;
+        const keyboard = { reply_markup: { inline_keyboard: [] } };
+        let rowButtons = [];
+        rows.forEach((row, index) => {
+            rowButtons.push({ text: row.name, callback_data: `showcategory_category_${row.name}` });
+            if ((index + 1) % 3 === 0 || index === rows.length - 1) {
+                keyboard.reply_markup.inline_keyboard.push(rowButtons);
+                rowButtons = [];
+            }
+        });
+        return keyboard;
 }
 
-// Создание клавиатуры категорий для сохранения цитат (инлайн)
 async function createSaveQuoteCategoryKeyboard() {
-    const rows = await runQuery(`SELECT name FROM categories`);
-    if (rows.length === 0) {
-        return {
+    try{
+        const rows = await runQuery(`SELECT name FROM categories`);
+        if (rows.length === 0) {
+            return {
+                reply_markup: {
+                    inline_keyboard: [[{ text: 'Категории отсутствуют', callback_data: 'no_categories' }]]
+                }
+            };
+        }
+        const keyboard = { reply_markup: { inline_keyboard: [] } };
+        let rowButtons = [];
+        rows.forEach((row, index) => {
+            rowButtons.push({ text: row.name, callback_data: `savequote_category_${row.name}` });
+            if ((index + 1) % 3 === 0 || index === rows.length - 1) {
+                keyboard.reply_markup.inline_keyboard.push(rowButtons);
+                rowButtons = [];
+            }
+        });
+        return keyboard;
+    } catch (error) {
+        console.error("Ошибка в createSaveQuoteCategoryKeyboard:", error); // Логирование
+         return {
             reply_markup: {
-                inline_keyboard: [[{ text: 'Категории отсутствуют', callback_data: 'no_categories' }]]
+                inline_keyboard: [[{ text: 'Ошибка загрузки', callback_data: 'error' }]]
             }
         };
     }
-    const keyboard = { reply_markup: { inline_keyboard: [] } };
-    let rowButtons = [];
-    rows.forEach((row, index) => {
-        rowButtons.push({ text: row.name, callback_data: `savequote_category_${row.name}` });
-        if ((index + 1) % 3 === 0 || index === rows.length - 1) {
-            keyboard.reply_markup.inline_keyboard.push(rowButtons);
-            rowButtons = [];
-        }
-    });
-    return keyboard;
 }
 
-// Получение случайной цитаты из внешнего API
+// *** Функция получения цитаты (с обработкой ошибок) ***
 async function getQuote() {
     try {
         const response = await fetch('http://api.forismatic.com/api/1.0/?method=getQuote&format=json&lang=ru');
+        if (!response.ok) {
+            throw new Error(`Ошибка HTTP: ${response.status}`); // Проверка статуса ответа
+        }
         const data = await response.json();
+         // Дополнительная проверка на случай, если API вернет некорректные данные
+        if (!data || !data.quoteText) {
+            throw new Error("API вернул некорректные данные");
+        }
         return `"${data.quoteText}" - ${data.quoteAuthor || 'Неизвестный автор'}`;
     } catch (error) {
-        console.error('Ошибка при получении цитаты из forismatic.com:', error.message);
-        return 'Не удалось получить цитату.';
+        console.error('Ошибка при получении цитаты из forismatic.com:', error);
+        return 'Не удалось получить цитату (ошибка API).';
     }
 }
+
+// *** Обработчики событий бота ***
 
 // Обработчик команды /start
 bot.onText(/\/start/, async (msg) => {
     const chatId = msg.chat.id;
-    const welcomeMessage = `
-Привет!
-
-С этим ботом ты станешь умнее!
-Но это не точно))
-`;
+    const welcomeMessage = `Привет!\n\nС этим ботом ты станешь умнее!\nНо это не точно))`;
     const mainKeyboard = await createMainKeyboard(chatId);
     await sendBotMessage(chatId, welcomeMessage, mainKeyboard);
 });
@@ -190,7 +222,7 @@ bot.on('message', async (msg) => {
             const quote = await getQuote();
             await sendBotMessage(chatId, quote, { reply_markup: createQuoteKeyboard().reply_markup });
         } catch (error) {
-            console.error('Ошибка при получении цитаты:', error);
+            console.error('Ошибка при получении цитаты:', error); // Уже обрабатывается в getQuote, но можно добавить и здесь
             await sendBotMessage(chatId, 'Произошла ошибка при получении цитаты.');
         }
         return;
@@ -209,7 +241,7 @@ bot.on('message', async (msg) => {
             const categoryKeyboard = await createCategoryKeyboard();
             await sendBotMessage(chatId, 'Выберите категорию:', categoryKeyboard);
         } catch (error) {
-            console.error('Ошибка при создании клавиатуры категорий:', error);
+            console.error('Ошибка при создании клавиатуры категорий:', error); //Уже ловим в createCategoryKeyboard
             await sendBotMessage(chatId, 'Произошла ошибка при загрузке категорий.');
         }
         return;
@@ -219,11 +251,12 @@ bot.on('message', async (msg) => {
     if (messageText === 'Показать категорию') {
         try {
             const categoryKeyboard = await createShowCategoryKeyboard();
-            await sendBotMessage(chatId, 'Выберите категорию:', categoryKeyboard);
+             await sendBotMessage(chatId, 'Выберите категорию:', categoryKeyboard);
         } catch (error) {
-            console.error('Ошибка при создании клавиатуры категорий:', error);
+            console.error('Ошибка при создании клавиатуры showCategoryKeyboard:', error);
             await sendBotMessage(chatId, 'Произошла ошибка при загрузке категорий.');
         }
+       
         return;
     }
 
@@ -234,7 +267,7 @@ bot.on('message', async (msg) => {
         return;
     }
 
-    // Обработка текста, введенного пользователем
+    // Обработка текста, введенного пользователем (если это не команда)
     if (msg.text && !msg.entities) {
         // Сохранение цитаты
         if (chatContext[chatId]?.action === 'save_quote') {
@@ -243,7 +276,7 @@ bot.on('message', async (msg) => {
                 const categoryKeyboard = await createSaveQuoteCategoryKeyboard();
                 await sendBotMessage(chatId, 'Выберите категорию для сохранения цитаты:', categoryKeyboard);
             } catch (error) {
-                console.error('Ошибка при создании клавиатуры категорий:', error);
+                console.error('Ошибка при создании клавиатуры createSaveQuoteCategoryKeyboard:', error);
                 await sendBotMessage(chatId, 'Произошла ошибка при загрузке категорий.');
                 delete chatContext[chatId];
             }
@@ -279,7 +312,6 @@ bot.on('callback_query', async (query) => {
     const messageId = query.message.message_id;
     const data = query.data;
 
-    // Если пользователь выбирает категорию для просмотра своих цитат
     if (data.startsWith('myquotes_category_')) {
         let category = data.split('myquotes_category_')[1];
         let page = 1;
@@ -317,7 +349,7 @@ bot.on('callback_query', async (query) => {
                 if (page > 1) {
                     paginationButtons.push({ text: '⬅️ Назад', callback_data: `myquotes_category_${category}_page:${page - 1}` });
                 }
-                paginationButtons.push({ text: `Стр. ${page} из ${totalPages}`, callback_data: 'dummy' });
+                paginationButtons.push({ text: `Стр. ${page} из ${totalPages}`, callback_data: 'dummy' }); // "dummy" - просто текст
                 if (page < totalPages) {
                     paginationButtons.push({ text: 'Вперед ➡️', callback_data: `myquotes_category_${category}_page:${page + 1}` });
                 }
@@ -329,14 +361,13 @@ bot.on('callback_query', async (query) => {
                 await sendBotMessage(chatId, `Цитаты в категории "${category}" (страница ${page}):`, { reply_markup: keyboard });
             }
         } catch (error) {
-            console.error('Ошибка при получении цитат:', error);
+            console.error('Ошибка при получении цитат (с пагинацией):', error);
             await sendBotMessage(chatId, 'Произошла ошибка при получении цитат.');
         }
         bot.answerCallbackQuery(query.id);
         return;
     }
 
-    // Если пользователь хочет показать цитаты определенной категории без пагинации
     if (data.startsWith('showcategory_category_')) {
         const category = data.split('showcategory_category_')[1];
         try {
@@ -348,14 +379,13 @@ bot.on('callback_query', async (query) => {
                 await sendBotMessage(chatId, `Цитаты в категории "${category}":\n${response}`);
             }
         } catch (error) {
-            console.error('Ошибка при получении цитат:', error);
+            console.error('Ошибка при получении цитат (без пагинации):', error);
             await sendBotMessage(chatId, 'Произошла ошибка при получении цитат.');
         }
         bot.answerCallbackQuery(query.id);
         return;
     }
 
-    // Сохранить текущую цитату
     if (data === 'save_quote') {
         const quoteText = query.message.text;
         chatContext[chatId] = { action: 'save_quote', quoteText };
@@ -363,7 +393,7 @@ bot.on('callback_query', async (query) => {
             const categoryKeyboard = await createSaveQuoteCategoryKeyboard();
             await sendBotMessage(chatId, 'Выберите категорию для сохранения цитаты:', categoryKeyboard);
         } catch (error) {
-            console.error('Ошибка при создании клавиатуры категорий:', error);
+            console.error('Ошибка при создании клавиатуры сохранения:', error);
             await sendBotMessage(chatId, 'Произошла ошибка при загрузке категорий.');
             delete chatContext[chatId];
         }
@@ -371,24 +401,24 @@ bot.on('callback_query', async (query) => {
         return;
     }
 
-    // Получить новую цитату
+    // *** Получить новую цитату (ТЕПЕРЬ ПРАВИЛЬНО!) ***
     if (data === 'get_new_quote') {
         try {
-            const newQuote = await getQuote();
+            const newQuote = await getQuote(); // Получаем новую цитату
+            // Используем ОБЕРТКУ editBotMessageText!
             await editBotMessageText(newQuote, {
-                chat_id: chatId,
-                message_id: messageId,
-                reply_markup: createQuoteKeyboard().reply_markup
+                chat_id: chatId,  // Передаем chatId
+                message_id: messageId, // Передаем messageId
+                reply_markup: createQuoteKeyboard().reply_markup // Добавляем клавиатуру
             });
         } catch (error) {
             console.error('Ошибка при получении новой цитаты:', error);
             await sendBotMessage(chatId, 'Произошла ошибка при получении новой цитаты.');
         }
-        bot.answerCallbackQuery(query.id);
+        bot.answerCallbackQuery(query.id); // Отвечаем на callback-запрос (ОБЯЗАТЕЛЬНО!)
         return;
     }
 
-    // Если пользователь выбирает категорию для сохранения цитаты
     if (data.startsWith('savequote_category_')) {
         const category = data.split('savequote_category_')[1];
         const quoteText = chatContext[chatId]?.quoteText;
@@ -400,7 +430,6 @@ bot.on('callback_query', async (query) => {
                 console.error('Ошибка при сохранении цитаты:', error);
                 await sendBotMessage(chatId, 'Произошла ошибка при сохранении цитаты.');
             }
-
         } else {
             await sendBotMessage(chatId, 'Цитата не найдена. Попробуйте снова.');
         }
@@ -409,7 +438,6 @@ bot.on('callback_query', async (query) => {
         return;
     }
 
-    // Если пользователь хочет показать конкретную цитату
     else if (data.startsWith('show_quote_')) {
         const quoteId = data.split('show_quote_')[1];
         try {
@@ -428,14 +456,13 @@ bot.on('callback_query', async (query) => {
                 await sendBotMessage(chatId, 'Цитата не найдена.');
             }
         } catch (error) {
-            console.error('Ошибка при получении цитаты:', error);
+            console.error('Ошибка при получении цитаты по ID:', error);
             await sendBotMessage(chatId, 'Произошла ошибка при получении цитаты.');
         }
         bot.answerCallbackQuery(query.id);
         return;
     }
 
-    // Если пользователь хочет удалить цитату
     else if (data.startsWith('delete_quote_')) {
         const quoteId = data.split('delete_quote_')[1];
         try {
@@ -449,7 +476,6 @@ bot.on('callback_query', async (query) => {
         return;
     }
 
-    // Если пользователь хочет отредактировать цитату
     else if (data.startsWith('edit_quote_')) {
         const quoteId = data.split('edit_quote_')[1];
         chatContext[chatId] = { action: 'edit_quote', quoteId };
@@ -459,7 +485,7 @@ bot.on('callback_query', async (query) => {
     }
 });
 
-// Обработка редактирования цитаты
+// Обработчик редактирования цитаты
 bot.on('message', async (msg) => {
     const chatId = msg.chat.id;
     if (chatContext[chatId]?.action === 'edit_quote') {
@@ -483,7 +509,7 @@ bot.on('message', async (msg) => {
     }
 });
 
-// Функция для получения цитат с пагинацией
+// *** Вспомогательные функции (для работы с БД) ***
 async function getSavedQuotesFromDatabaseWithPagination(chatId, limit, offset, category = null) {
     let query = `SELECT id, text FROM saved_quotes WHERE chatId = $1`;
     const params = [chatId];
@@ -491,13 +517,11 @@ async function getSavedQuotesFromDatabaseWithPagination(chatId, limit, offset, c
         query += ` AND category = $2`;
         params.push(category);
     }
-    query += ` LIMIT $3 OFFSET $4`;
-    params.push(limit, offset);
+    query += ` ORDER BY timestamp DESC LIMIT $3 OFFSET $4`; // Добавил сортировку по времени
     const rows = await runQuery(query, params);
     return rows;
 }
 
-// Функция для получения всех цитат по категории
 async function getSavedQuotesFromDatabase(category) {
     const query = `SELECT text FROM saved_quotes WHERE category = $1`;
     const params = [category];
@@ -505,14 +529,19 @@ async function getSavedQuotesFromDatabase(category) {
     return rows;
 }
 
-// Грациозное завершение работы бота
+// *** Завершение работы бота ***
 process.on('SIGINT', gracefulShutdown);
 process.on('SIGTERM', gracefulShutdown);
 
 async function gracefulShutdown() {
     console.log('Выключение бота...');
-    await bot.stopPolling();
-    await closeDB();
-    console.log('Соединение с базой данных закрыто.');
-    process.exit(0);
+    try {
+        await bot.stopPolling();
+        await closeDB();
+        console.log('Соединение с базой данных закрыто.');
+    } catch (error) {
+        console.error('Ошибка при завершении работы:', error);
+    } finally {
+        process.exit(0); // Выходим в любом случае
+    }
 }
