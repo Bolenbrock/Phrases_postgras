@@ -1,36 +1,39 @@
-// Импортируем необходимые модули
 import TelegramBot from 'node-telegram-bot-api';
 import {
-    runQuery,              // Функция для выполнения SQL-запросов
-    runCommand,             // Функция для выполнения SQL-команд
-    closeDB,               // Закрытие соединения с базой данных
-    getQuoteById,           // Получение цитаты по ID
-    deleteQuoteById,        // Удаление цитаты по ID
-    updateQuoteById,        // Обновление цитаты по ID
-    searchQuotesWithPagination, // Поиск цитат с пагинацией
-    saveQuoteToDatabase,     // Сохранение цитаты в базу данных
-    getMuteStatus,          // Функция получения статуса звука для чата
-    setMuteStatus           // Функция установки статуса звука для чата
+    runQuery,
+    runCommand,
+    closeDB,
+    getQuoteById,
+    deleteQuoteById,
+    updateQuoteById,
+    searchQuotesWithPagination,
+    saveQuoteToDatabase,
+    getMuteStatus,
+    setMuteStatus
 } from './db.js';
-import fetch from 'node-fetch'; // Модуль для работы с HTTP-запросами
-import 'dotenv/config';         // Модуль для загрузки переменных окружения из .env файла
-let soundEnabled = false; // По умолчанию звук отключен
+import fetch from 'node-fetch';
+import 'dotenv/config';
 
-// Получаем токен бота из переменных окружения
 const token = process.env.BOT_TOKEN;
 if (!token) {
     console.error('BOT_TOKEN не найден в .env файле');
-    process.exit(1); // Выход из программы, если токен отсутствует
+    process.exit(1);
 }
 
-// Создаем экземпляр бота
 const bot = new TelegramBot(token, { polling: true });
 console.log('Бот запущен!');
 
-// Контекст чата для временного хранения состояний пользователей
 const chatContext = {};
 
-// Создание главной клавиатуры с двумя кнопками для управления звуком
+// Общая функция для отправки сообщений с учетом настроек звука
+async function sendMessageWithMute(chatId, text, options = {}) {
+    const mute = await getMuteStatus(chatId);
+    return bot.sendMessage(chatId, text, {
+        ...options,
+        disable_notification: mute
+    });
+}
+
 async function createMainKeyboard(chatId) {
     const mute = await getMuteStatus(chatId);
     return {
@@ -38,14 +41,13 @@ async function createMainKeyboard(chatId) {
             keyboard: [
                 [{ text: 'Получить цитату' }, { text: 'Сохранить цитату' }],
                 [{ text: 'Мои цитаты' }, { text: 'Показать категорию' }, { text: 'Поиск текста' }],
-                [{ text: '🔔 Включить звук' }, { text: '🔕 Отключить звук' }] // Две отдельные кнопки
+                [{ text: mute ? '🔔 Включить звук' : '🔕 Отключить звук' }]
             ],
             resize_keyboard: true
         }
     };
 }
 
-// Создание клавиатуры для действий с цитатами (инлайн)
 function createQuoteKeyboard() {
     return {
         reply_markup: {
@@ -57,9 +59,11 @@ function createQuoteKeyboard() {
     };
 }
 
-// Создание клавиатуры категорий для выбора при просмотре своих цитат (инлайн)
-async function createCategoryKeyboard() {
+// Обновленные функции создания клавиатур с учетом звука
+async function createCategoryKeyboard(chatId) {
     const rows = await runQuery(`SELECT name FROM categories`);
+    const mute = await getMuteStatus(chatId);
+
     if (rows.length === 0) {
         return {
             reply_markup: {
@@ -67,19 +71,25 @@ async function createCategoryKeyboard() {
             }
         };
     }
+
     const keyboard = { reply_markup: { inline_keyboard: [] } };
     let rowButtons = [];
+
     rows.forEach((row, index) => {
-        rowButtons.push({ text: row.name, callback_data: `myquotes_category_${row.name}` });
+        rowButtons.push({
+            text: row.name,
+            callback_data: `myquotes_category_${row.name}`
+        });
+
         if ((index + 1) % 3 === 0 || index === rows.length - 1) {
             keyboard.reply_markup.inline_keyboard.push(rowButtons);
             rowButtons = [];
         }
     });
+
     return keyboard;
 }
 
-// Создание клавиатуры категорий для просмотра цитат (инлайн)
 async function createShowCategoryKeyboard() {
     const rows = await runQuery(`SELECT name FROM categories`);
     if (rows.length === 0) {
@@ -101,7 +111,6 @@ async function createShowCategoryKeyboard() {
     return keyboard;
 }
 
-// Создание клавиатуры категорий для сохранения цитат (инлайн)
 async function createSaveQuoteCategoryKeyboard() {
     const rows = await runQuery(`SELECT name FROM categories`);
     if (rows.length === 0) {
@@ -135,123 +144,119 @@ async function getQuote() {
     }
 }
 
-// Обработчик команды /start
+// Обработчик команды /start с учетом звука
 bot.onText(/\/start/, async (msg) => {
     const chatId = msg.chat.id;
-    const welcomeMessage = `
-Привет!
+    const welcomeMessage = `Привет!\n\nС этим ботом ты станешь умнее!\nНо это не точно))`;
 
-С этим ботом ты станешь умнее! 
-Но это не точно))
-`;
-    const mainKeyboard = await createMainKeyboard(chatId);
-    await bot.sendMessage(chatId, welcomeMessage, mainKeyboard);
+    await sendMessageWithMute(
+        chatId,
+        welcomeMessage,
+        await createMainKeyboard(chatId)
+    );
 });
 
-// Основной обработчик сообщений
+// Главный обработчик сообщений
 bot.on('message', async (msg) => {
     const chatId = msg.chat.id;
     const messageText = msg.text;
-    const mute = await getMuteStatus(chatId);
 
-    // Обработка включения звука
-    if (messageText === '🔔 Включить звук') {
-        await setMuteStatus(chatId, false); // Включаем звук
+    if (messageText === '🔔 Включить звук' || messageText === '🔕 Отключить звук') {
+        const mute = messageText === '🔕 Отключить звук';
+        await setMuteStatus(chatId, mute);
         const mainKeyboard = await createMainKeyboard(chatId);
-        await bot.sendMessage(chatId, '🔊 Уведомления включены.', { ...mainKeyboard, disable_notification: false });
+        await sendMessageWithMute(
+            chatId,
+            mute ? '🔇 Уведомления отключены.' : '🔊 Уведомления включены.',
+            mainKeyboard
+        );
         return;
     }
 
-    // Обработка выключения звука
-    if (messageText === '🔕 Отключить звук') {
-        await setMuteStatus(chatId, true); // Отключаем звук
-        const mainKeyboard = await createMainKeyboard(chatId);
-        await bot.sendMessage(chatId, '🔇 Уведомления отключены.', { ...mainKeyboard, disable_notification: true });
-        return;
-    }
-
-    // Получение цитаты
     if (messageText === 'Получить цитату') {
         try {
             const quote = await getQuote();
-            await bot.sendMessage(chatId, quote, { disable_notification: mute, reply_markup: createQuoteKeyboard().reply_markup });
+            await sendMessageWithMute(
+                chatId,
+                quote,
+                createQuoteKeyboard()
+            );
         } catch (error) {
-            console.error('Ошибка при получении цитаты:', error);
-            await bot.sendMessage(chatId, 'Произошла ошибка при получении цитаты.');
+            await sendMessageWithMute(chatId, 'Произошла ошибка при получении цитаты.');
         }
         return;
     }
 
-    // Сохранение цитаты
     if (messageText === 'Сохранить цитату') {
         chatContext[chatId] = { action: 'save_quote' };
-        await bot.sendMessage(chatId, 'Введите текст цитаты:', { disable_notification: mute });
+        await sendMessageWithMute(chatId, 'Введите текст цитаты:');
         return;
     }
 
-    // Просмотр своих цитат
     if (messageText === 'Мои цитаты') {
         try {
-            const categoryKeyboard = await createCategoryKeyboard();
-            await bot.sendMessage(chatId, 'Выберите категорию:', { ...categoryKeyboard, disable_notification: mute });
+            const categoryKeyboard = await createCategoryKeyboard(chatId);
+            await sendMessageWithMute(
+                chatId,
+                'Выберите категорию:',
+                categoryKeyboard
+            );
         } catch (error) {
-            console.error('Ошибка при создании клавиатуры категорий:', error);
-            await bot.sendMessage(chatId, 'Произошла ошибка при загрузке категорий.');
+            await sendMessageWithMute(chatId, 'Произошла ошибка при загрузке категорий.');
         }
         return;
     }
 
-    // Показать категорию (все цитаты в категории)
     if (messageText === 'Показать категорию') {
         try {
             const categoryKeyboard = await createShowCategoryKeyboard();
-            await bot.sendMessage(chatId, 'Выберите категорию:', { ...categoryKeyboard, disable_notification: mute });
+            await sendMessageWithMute(
+                chatId,
+                'Выберите категорию:',
+                categoryKeyboard
+            );
         } catch (error) {
-            console.error('Ошибка при создании клавиатуры категорий:', error);
-            await bot.sendMessage(chatId, 'Произошла ошибка при загрузке категорий.');
+            await sendMessageWithMute(chatId, 'Произошла ошибка при загрузке категорий.');
         }
         return;
     }
 
-    // Поиск текста
     if (messageText === 'Поиск текста') {
-        await bot.sendMessage(chatId, 'Введите текст для поиска:', { disable_notification: mute });
+        await sendMessageWithMute(chatId, 'Введите текст для поиска:');
         chatContext[chatId] = { action: 'search_text' };
         return;
     }
 
-    // Обработка текста, введенного пользователем
     if (msg.text && !msg.entities) {
-        // Сохранение цитаты
         if (chatContext[chatId]?.action === 'save_quote') {
             chatContext[chatId].quoteText = msg.text;
             try {
                 const categoryKeyboard = await createSaveQuoteCategoryKeyboard();
-                await bot.sendMessage(chatId, 'Выберите категорию для сохранения цитаты:', { ...categoryKeyboard, disable_notification: mute });
+                await sendMessageWithMute(
+                    chatId,
+                    'Выберите категорию для сохранения цитаты:',
+                    categoryKeyboard
+                );
             } catch (error) {
-                console.error('Ошибка при создании клавиатуры категорий:', error);
-                await bot.sendMessage(chatId, 'Произошла ошибка при загрузке категорий.');
+                await sendMessageWithMute(chatId, 'Произошла ошибка при загрузке категорий.');
                 delete chatContext[chatId];
             }
             return;
         }
 
-        // Поиск текста
         if (chatContext[chatId]?.action === 'search_text') {
             try {
-                console.log(`Пользователь ${chatId} ищет текст: "${messageText}"`);
                 const results = await searchQuotesWithPagination(messageText, 10, 0);
                 if (results.length > 0) {
                     const response = results
                         .map((result, index) => `${index + 1}. ${result}\n---\n`)
                         .join('\n');
-                    await bot.sendMessage(chatId, `Результаты поиска:\n${response}`, { parse_mode: 'HTML', disable_notification: mute });
+                    await sendMessageWithMute(chatId, `Результаты поиска:\n${response}`);
                 } else {
-                    await bot.sendMessage(chatId, `Цитат, содержащих "${messageText}", не найдено.`, { disable_notification: mute });
+                    await sendMessageWithMute(chatId, `Цитат, содержащих "${messageText}", не найдено.`);
                 }
             } catch (error) {
-                console.error('Ошибка при поиске цитат:', error);
-                await bot.sendMessage(chatId, 'Произошла ошибка при поиске. Попробуйте позже.', { disable_notification: mute });
+                await sendMessageWithMute(chatId, 'Произошла ошибка при поиске. Попробуйте позже.');
             }
             delete chatContext[chatId];
             return;
@@ -259,12 +264,17 @@ bot.on('message', async (msg) => {
     }
 });
 
-// Обработчик callback-запросов (действия с инлайн-клавиатурой)
+// Обработчик callback-запросов
 bot.on('callback_query', async (query) => {
     const chatId = query.message.chat.id;
     const messageId = query.message.message_id;
     const data = query.data;
-    const mute = await getMuteStatus(chatId);
+
+    // Всегда отвечаем без звука
+    await bot.answerCallbackQuery(query.id, {
+        show_alert: false,
+        cache_time: 0
+    });
 
     // Если пользователь выбирает категорию для просмотра своих цитат
     if (data.startsWith('myquotes_category_')) {
@@ -282,7 +292,7 @@ bot.on('callback_query', async (query) => {
         try {
             const quotes = await getSavedQuotesFromDatabaseWithPagination(chatId, limit, offset, category); // Получаем цитаты по категории и странице
             if (quotes.length === 0) {
-                await bot.sendMessage(chatId, `У вас нет цитат в категории "${category}" (страница ${page}).`, { disable_notification: mute }); // Если цитат нет, отправляем сообщение об этом
+                await sendMessageWithMute(chatId, `У вас нет цитат в категории "${category}" (страница ${page}).`); // Если цитат нет, отправляем сообщение об этом
             } else {
                 const keyboard = {
                     inline_keyboard: quotes.map(quote => [
@@ -316,13 +326,12 @@ bot.on('callback_query', async (query) => {
                 }
 
                 // Отправляем список цитат
-                await bot.sendMessage(chatId, `Цитаты в категории "${category}" (страница ${page}):`, { reply_markup: keyboard, disable_notification: mute });
+                await sendMessageWithMute(chatId, `Цитаты в категории "${category}" (страница ${page}):`, { reply_markup: keyboard });
             }
         } catch (error) {
             console.error('Ошибка при получении цитат:', error);
-            await bot.sendMessage(chatId, 'Произошла ошибка при получении цитат.', { disable_notification: mute }); // Если произошла ошибка, отправляем сообщение об ошибке
+            await sendMessageWithMute(chatId, 'Произошла ошибка при получении цитат.'); // Если произошла ошибка, отправляем сообщение об ошибке
         }
-        bot.answerCallbackQuery(query.id); // Отвечаем на callback запрос
         return;
     }
 
@@ -332,18 +341,18 @@ bot.on('callback_query', async (query) => {
         try {
             const quotes = await getSavedQuotesFromDatabase(category); // Получаем цитаты по категории
             if (quotes.length === 0) {
-                await bot.sendMessage(chatId, `Цитаты в категории "${category}" отсутствуют.`, { disable_notification: mute }); // Если цитат нет, отправляем сообщение об этом
+                await sendMessageWithMute(chatId, `Цитаты в категории "${category}" отсутствуют.`); // Если цитат нет, отправляем сообщение об этом
             } else {
                 const response = quotes.map((quote, index) => `${index + 1}. ${quote.text}`).join('\n'); // Форматируем список цитат
-                await bot.sendMessage(chatId, `Цитаты в категории "${category}":\n${response}`, { disable_notification: mute }); // Отправляем список цитат
+                await sendMessageWithMute(chatId, `Цитаты в категории "${category}":\n${response}`); // Отправляем список цитат
             }
         } catch (error) {
             console.error('Ошибка при получении цитат:', error);
-            await bot.sendMessage(chatId, 'Произошла ошибка при получении цитат.', { disable_notification: mute }); // Если произошла ошибка, отправляем сообщение об ошибке
+            await sendMessageWithMute(chatId, 'Произошла ошибка при получении цитат.'); // Если произошла ошибка, отправляем сообщение об ошибке
         }
-        bot.answerCallbackQuery(query.id); // Отвечаем на callback запрос
         return;
     }
+
 
     // Сохранить текущую цитату
     if (data === 'save_quote') {
@@ -351,13 +360,16 @@ bot.on('callback_query', async (query) => {
         chatContext[chatId] = { action: 'save_quote', quoteText };
         try {
             const categoryKeyboard = await createSaveQuoteCategoryKeyboard();
-            await bot.sendMessage(chatId, 'Выберите категорию для сохранения цитаты:', { ...categoryKeyboard, disable_notification: mute });
+            await sendMessageWithMute(
+                chatId,
+                'Выберите категорию для сохранения цитаты:',
+                categoryKeyboard
+            );
         } catch (error) {
             console.error('Ошибка при создании клавиатуры категорий:', error);
-            await bot.sendMessage(chatId, 'Произошла ошибка при загрузке категорий.', { disable_notification: mute });
+            await sendMessageWithMute(chatId, 'Произошла ошибка при загрузке категорий.');
             delete chatContext[chatId];
         }
-        bot.answerCallbackQuery(query.id);
         return;
     }
 
@@ -365,17 +377,15 @@ bot.on('callback_query', async (query) => {
     if (data === 'get_new_quote') {
         try {
             const newQuote = await getQuote();
-            await bot.editMessageText(newQuote, {
-                chat_id: chatId,
-                message_id: messageId,
-                disable_notification: mute,
-                reply_markup: createQuoteKeyboard().reply_markup
-            });
+            await bot.deleteMessage(chatId, messageId);
+            await sendMessageWithMute(
+                chatId,
+                newQuote,
+                createQuoteKeyboard()
+            );
         } catch (error) {
-            console.error('Ошибка при получении новой цитаты:', error);
-            await bot.sendMessage(chatId, 'Произошла ошибка при получении новой цитаты.', { disable_notification: mute });
+            await sendMessageWithMute(chatId, 'Произошла ошибка при получении новой цитаты.');
         }
-        bot.answerCallbackQuery(query.id);
         return;
     }
 
@@ -386,19 +396,18 @@ bot.on('callback_query', async (query) => {
         if (quoteText) {
             try {
                 await saveQuoteToDatabase(chatId, quoteText, category);
-                await bot.sendMessage(chatId, `Цитата успешно сохранена в категорию "${category}"!`, { disable_notification: mute });
+                await sendMessageWithMute(chatId, `Цитата успешно сохранена в категорию "${category}"!`);
             } catch (error) {
                 console.error('Ошибка при сохранении цитаты:', error);
-                await bot.sendMessage(chatId, 'Произошла ошибка при сохранении цитаты.', { disable_notification: mute });
+                await sendMessageWithMute(chatId, 'Произошла ошибка при сохранении цитаты.');
             }
+
         } else {
-            await bot.sendMessage(chatId, 'Цитата не найдена. Попробуйте снова.', { disable_notification: mute });
+            await sendMessageWithMute(chatId, 'Цитата не найдена. Попробуйте снова.');
         }
         delete chatContext[chatId];
-        bot.answerCallbackQuery(query.id);
         return;
     }
-
     // Если пользователь хочет показать конкретную цитату
     else if (data.startsWith('show_quote_')) {
         const quoteId = data.split('show_quote_')[1]; // Извлекаем ID цитаты
@@ -413,15 +422,14 @@ bot.on('callback_query', async (query) => {
                         ]
                     ]
                 };
-                await bot.sendMessage(chatId, `Цитата: ${quote.text}`, { reply_markup: keyboard, disable_notification: mute }); // Отправляем цитату с кнопками действий
+                await sendMessageWithMute(chatId, `Цитата: ${quote.text}`, { reply_markup: keyboard }); // Отправляем цитату с кнопками действий
             } else {
-                await bot.sendMessage(chatId, 'Цитата не найдена.', { disable_notification: mute }); // Если цитата не найдена, отправляем сообщение об этом
+                await sendMessageWithMute(chatId, 'Цитата не найдена.'); // Если цитата не найдена, отправляем сообщение об этом
             }
         } catch (error) {
             console.error('Ошибка при получении цитаты:', error);
-            await bot.sendMessage(chatId, 'Произошла ошибка при получении цитаты.', { disable_notification: mute }); // Если произошла ошибка, отправляем сообщение об ошибке
+            await sendMessageWithMute(chatId, 'Произошла ошибка при получении цитаты.'); // Если произошла ошибка, отправляем сообщение об ошибке
         }
-        bot.answerCallbackQuery(query.id); // Отвечаем на callback запрос
         return;
     }
 
@@ -430,12 +438,11 @@ bot.on('callback_query', async (query) => {
         const quoteId = data.split('delete_quote_')[1]; // Извлекаем ID цитаты
         try {
             await deleteQuoteById(quoteId); // Удаляем цитату
-            await bot.sendMessage(chatId, 'Цитата успешно удалена.', { disable_notification: mute }); // Отправляем сообщение об успешном удалении
+            await sendMessageWithMute(chatId, 'Цитата успешно удалена.'); // Отправляем сообщение об успешном удалении
         } catch (error) {
             console.error('Ошибка при удалении цитаты:', error);
-            await bot.sendMessage(chatId, 'Произошла ошибка при удалении цитаты.', { disable_notification: mute }); // Если произошла ошибка, отправляем сообщение об ошибке
+            await sendMessageWithMute(chatId, 'Произошла ошибка при удалении цитаты.'); // Если произошла ошибка, отправляем сообщение об ошибке
         }
-        bot.answerCallbackQuery(query.id); // Отвечаем на callback запрос
         return;
     }
 
@@ -443,8 +450,7 @@ bot.on('callback_query', async (query) => {
     else if (data.startsWith('edit_quote_')) {
         const quoteId = data.split('edit_quote_')[1]; // Извлекаем ID цитаты
         chatContext[chatId] = { action: 'edit_quote', quoteId }; // Устанавливаем состояние "редактирование цитаты"
-        await bot.sendMessage(chatId, 'Введите новый текст для цитаты:', { disable_notification: mute }); // Простим пользователя ввести новый текст
-        bot.answerCallbackQuery(query.id); // Отвечаем на callback запрос
+        await sendMessageWithMute(chatId, 'Введите новый текст для цитаты:'); // Просим пользователя ввести новый текст
         return;
     }
 });
@@ -458,14 +464,14 @@ bot.on('message', async (msg) => {
         try {
             const quote = await getQuoteById(quoteId);
             if (!quote) {
-                await bot.sendMessage(chatId, 'Цитата не найдена.', { disable_notification: mute });
+                await sendMessageWithMute(chatId, 'Цитата не найдена.');
                 return;
             }
             await updateQuoteById(quoteId, newText, quote.category);
-            await bot.sendMessage(chatId, 'Цитата успешно обновлена!', { disable_notification: mute });
+            await sendMessageWithMute(chatId, 'Цитата успешно обновлена!');
         } catch (error) {
             console.error('Ошибка при обновлении цитаты:', error);
-            await bot.sendMessage(chatId, 'Произошла ошибка при обновлении цитаты.', { disable_notification: mute });
+            await sendMessageWithMute(chatId, 'Произошла ошибка при обновлении цитаты.');
         } finally {
             delete chatContext[chatId];
         }
