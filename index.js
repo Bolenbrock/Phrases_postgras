@@ -344,7 +344,7 @@ bot.on('callback_query', async (query) => {
         chatContext[chatId] = { action: 'save_quote', quoteText };
         try {
             const categoryKeyboard = await createSaveQuoteCategoryKeyboard();
-            await bot.sendMessage(chatId,disable_notification: mute, 'Выберите категорию для сохранения цитаты:', categoryKeyboard);
+            await bot.sendMessage(chatId, 'Выберите категорию для сохранения цитаты:', categoryKeyboard);
         } catch (error) {
             console.error('Ошибка при создании клавиатуры категорий:', error);
             await bot.sendMessage(chatId, 'Произошла ошибка при загрузке категорий.');
