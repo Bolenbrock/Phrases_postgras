@@ -14,6 +14,7 @@ import {
 } from './db.js';
 import fetch from 'node-fetch'; // Модуль для работы с HTTP-запросами
 import 'dotenv/config';         // Модуль для загрузки переменных окружения из .env файла
+let soundEnabled = false; // По умолчанию звук отключен
 
 // Получаем токен бота из переменных окружения
 const token = process.env.BOT_TOKEN;
